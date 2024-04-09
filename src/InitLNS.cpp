@@ -103,6 +103,7 @@ bool InitLNS::run() {
             for (auto i = 0; i < agents.size(); i++) paths[i] = &agents[i].path;
         }
 
+        auto pre_t1 = 0;
         while (true) {
             *is_running = 230;
             runtime = getTime() - start_time;
@@ -115,6 +116,26 @@ bool InitLNS::run() {
                 *is_running = 231;
                 need_break = true;
             }
+
+            if(param_use_early_stop) {
+                // early stop, 间隔若干秒
+                auto cur_t1 = int(runtime / 2);
+                if(pre_t1 != cur_t1) {
+                    pre_t1 = cur_t1;
+                    auto solution_shared_b = share_manager->get_current_best_group_solution();
+                    if (solution_shared_b->num_of_colliding_pairs == 0 &&
+                        solution_shared_b->sum_of_costs < sum_of_costs) {
+                        // if (screen > 0)
+                            printf("\t--> g %d pe %d initlns:1801 set "
+                                "collision_interrupt 1\n",
+                                myGroup, myId);
+                        solution_shared->phase_collision_asynch_interrupt = true;
+                        *is_running = 2311;
+                        need_break = true;
+                    }
+                }
+            }
+
             if (runtime > time_limit || num_of_colliding_pairs == 0 ||
                 solution_shared->phase_collision_asynch_interrupt) {
                 *is_running = 232;
@@ -285,17 +306,12 @@ bool InitLNS::run() {
             if (solution_shared != 0) {
                 if (num_of_iteration % param_share_step_phase_collision == 0)
                     flag_share = true;
-                if (iter_of_run_after_sa_accept > 0) {
-                    iter_of_run_after_sa_accept--;
-                    if (iter_of_run_after_sa_accept > 0) flag_share = false;
-                }
                 if (num_of_colliding_pairs == 0) flag_share = true;
             }
             if (screen >= 1)
                 if (iteration_stats.size() < 1 || num_of_colliding_pairs == 0 ||
                     neighbor.colliding_pairs.size() <
-                        neighbor.old_colliding_pairs.size() ||
-                    iter_of_run_after_sa_accept > 0)
+                        neighbor.old_colliding_pairs.size())
                     cout << "g " << myGroup << " pe " << myId 
                          << " Restart " << num_of_restart 
                          << " Iteration " << iteration_stats.size() 
@@ -305,7 +321,6 @@ bool InitLNS::run() {
                          << num_of_failures * 1. / (1e-5 + iteration_stats.size())
                          << " cons_fail " << num_of_consecutive_failures 
                          << " " << fail_rate 
-                         << " iterDD " << iter_of_run_after_sa_accept 
                          << " saT " << simulated_annealing::sa_iteration_T 
                          << " cost " << sum_of_costs 
                          << " remaining " << time_limit - runtime << endl;
@@ -594,12 +609,7 @@ bool InitLNS::runPP() {
                         neighbor.old_colliding_pairs.size();
             bool b =
                 simulated_annealing::can_accept(dt, screen, num_of_iteration);
-            if (b) {
-                if (iter_of_run_after_sa_accept == 0)
-                    iter_of_run_after_sa_accept =
-                        param_num_of_run_after_sa_accept;
-                return true;
-            }
+            if (b) return true;
         }
         auto p2 = shuffled_agents.begin();
         while (p2 != p) {

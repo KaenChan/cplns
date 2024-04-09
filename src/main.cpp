@@ -32,9 +32,6 @@ string group_mode_phase_collision;
 
 LNS *lns_1st = nullptr;
 
-//当使用eecbs时，在r64机器上不能用jemalloc，在r8上面可以
-bool portfolio_pp_and_eecbs_init = false;
-
 void stopAllSolvers() {
     interruptLock.lock();
     solvingDoneLocal = true;
@@ -70,47 +67,14 @@ bool getGlobalEnding(int mpi_size, int mpi_rank) {
 void *solverRunningThread(void *arg) {
     LNS *solver = (LNS *)arg;
     tl_use_simulated_annealing = param_use_simulated_annealing;
-    if (param_single_agent_solver_f_w < -1 && param_num_solver > 1) {
-        float wh = -param_single_agent_solver_f_w - 1;
-        float p = 3.;
-        p = param_single_agent_solver_f_w_p;
-        // printf("g_single_agent_solver_f_w %f wh %f\n",
-        // g_single_agent_solver_f_w, wh);
-        if (group_mode_phase_collision == "central") {
-            wh = std::pow(wh, 1 / p);
-            tl_single_agent_solver_f_w =
-                1 + std::pow(solver->myId * wh /
-                                 std::max(1, solver->numLocalSolver - 1),
-                             p);
-            if (solver->myGroup > 0)
-                tl_single_agent_solver_f_w += std::pow(
-                    (solver->myGroup) * wh / (solver->numGroup - 1), p);
-        } else {
-            wh = std::pow(wh, 1 / p);
-            tl_single_agent_solver_f_w =
-                1 + std::pow((solver->threadId) * wh /
-                                 std::max(1, param_num_solver - 1),
-                             p);
-            if (solver->myGroup == 0 && solver->numGroup > 1)
-                tl_single_agent_solver_f_w = 1.0;
-        }
-        // if(solver->myId == 11)
-        // 	tl_single_agent_solver_f_w = 3.0;
-        // if(solver->myGroup == 9)
-        // 	tl_single_agent_solver_f_w = 2.0;
-        // if(solver->myGroup == 10)
-        // 	tl_single_agent_solver_f_w = 3.0;
-        // if(tl_single_agent_solver_f_w >= 2)
-        // 	tl_use_simulated_annealing = false;
-    } else {
-        tl_single_agent_solver_f_w = std::abs(param_single_agent_solver_f_w);
-        if (tl_single_agent_solver_f_w < 1) tl_single_agent_solver_f_w = 1;
-    }
-    if(portfolio_pp_and_eecbs_init && solver->init_algo_name == "EECBS")
-        tl_single_agent_solver_f_w = 1.0;
-    printf("g %d pe %d fw %.2f sa %d %s %s %s\n", solver->myGroup, solver->myId,
+    tl_single_agent_solver_f_w = solver->single_agent_solver_f_w;
+    lacam::Planner::PIBT_NUM = solver->lacam_pibt_num;
+    lacam::Planner::FLG_STAR = solver->lacam_star;
+
+    printf("g %d pe %d fw %.2f sa %d %s %s %s pibt %d star %d\n", solver->myGroup, solver->myId,
            tl_single_agent_solver_f_w, tl_use_simulated_annealing, 
-           solver->init_algo_name.c_str(), solver->init_replan_algo_name.c_str(), solver->replan_algo_name.c_str());
+           solver->init_algo_name.c_str(), solver->init_replan_algo_name.c_str(), solver->replan_algo_name.c_str(), 
+           lacam::Planner::PIBT_NUM, lacam::Planner::FLG_STAR);
     // while (true)
     {
         // interruptLock.lock();
@@ -121,8 +85,8 @@ void *solverRunningThread(void *arg) {
         // 	solver->unsetSolverInterrupt();
         // }
         // interruptLock.unlock();
-        // bool succ = solver->run();
-        bool succ = solver->run_with_restart();
+        bool succ = solver->run();
+        // bool succ = solver->run_with_restart();
         solver->is_running = -1;
         if (succ == true) {
             solvingDoneLocal = true;
@@ -139,24 +103,15 @@ void *solverRunningThread(void *arg) {
 
 vector<int> generate_groups(int groupsCount, int solversCount) {
     vector<int> group_list;
-    group_list.resize(groupsCount, 0);
-    if (group_mode_phase_collision == "central")
-        for (int i = 0; i < groupsCount; i++) {
-            if (i == 0)
-                group_list[i] = solversCount - groupsCount + 1;
-            else
-                group_list[i] = 1;
-        }
-    else
-        for (int i = 0; i < solversCount; i++) {
-            int gi = i % groupsCount;
-            group_list[gi]++;
-        }
-    if(portfolio_pp_and_eecbs_init && group_list[groupsCount-1] > 1) {
-        group_list[groupsCount-1]--;
-        group_list.push_back(1);
+    group_list.resize(groupsCount + param_num_solver_hybrid, 0);
+    for (int i = 0; i < param_num_solver_pp; i++) {
+        int gi = i % groupsCount;
+        group_list[gi]++;
     }
-
+    for (int i = 0; i < param_num_solver_hybrid; i++) {
+        int gi = groupsCount + i;
+        group_list[gi] = 1;
+    }
     return group_list;
 }
 
@@ -166,6 +121,64 @@ int runThreadTestSpeed(void *arg) {
     tl_single_agent_solver_f_w = 1;
     bool succ = solver->run();
     return solver->init_lns->num_of_ll_search;
+}
+
+void set_portfolio_parameter() {
+    int num_solver1 = param_num_solver_pp;
+    int num_solver2 = param_num_solver_hybrid;
+    for (int i = 0; i < param_num_solver; i++) {
+        auto solver = solvers[i];
+        float f_w = 1.0;
+        int lacam_pibt_num = 1;
+        bool lacam_star = false;
+        if (i < num_solver1) {
+            int cnt = i;
+            if (param_single_agent_solver_f_w < -1 && num_solver1 > 1) {
+                float wh = -param_single_agent_solver_f_w - 1;
+                float p = 1.;
+                f_w = 1 + cnt * wh / std::max(1, num_solver1 - 1);
+                if (solver->myGroup == 0)
+                    f_w = 1.0;
+
+            } else {
+                f_w = std::abs(param_single_agent_solver_f_w);
+                if (f_w < 1)
+                    f_w = 1;
+            }
+            if (param_num_solver_hybrid > 0 && solver->init_algo_name == "EECBS")
+                f_w = 1.0;
+            if (param_lacam_star)
+                lacam_star = true;
+        } else {
+            // init algo type
+            solver->init_algo_name = param_hybrid_init_algo_type;
+            solver->share_manager->solutions[solver->myGroup]->has_hybrid_solver = true;
+
+            // lacam star
+            if (param_lacam_star ||
+                param_lacam_star_last_thread && i == param_num_solver - 1)
+                lacam_star = true;
+
+            // lacam pibt num
+            int cnt = i - num_solver1;
+            if (param_lacam_pibt_num < -1 && num_solver2 > 1) {
+                float pn1 = -param_lacam_pibt_num - 1;
+                float pn2 = 1 + cnt * pn1 / std::max(1, num_solver2 - 1);
+                lacam_pibt_num = int(pn2);
+            } else {
+                lacam_pibt_num = std::abs(param_lacam_pibt_num);
+                if (lacam_pibt_num < 1)
+                    lacam_pibt_num = 1;
+            }
+        }
+        solver->single_agent_solver_f_w = f_w;
+        solver->lacam_pibt_num = lacam_pibt_num;
+        solver->lacam_star = lacam_star;
+        // printf("g %d pe %d fw %.2f algo %s %s %s pibt %d star %d\n", solver->myGroup,
+        //        solver->myId, f_w, solver->init_algo_name.c_str(),
+        //        solver->init_replan_algo_name.c_str(),
+        //        solver->replan_algo_name.c_str(), lacam_pibt_num, lacam_star);
+    }
 }
 
 int get_np_by_test_speed(Instance &instance, PIBTPPS_option &pipp_option,
@@ -281,7 +294,7 @@ int main(int argc, char **argv) {
 
         // lacam
         ("lacam_star", po::value<bool>()->default_value(false), "lacam_star")
-        ("lacam2_only", po::value<bool>()->default_value(false), "lacam2_only")
+        ("lacam_star_last_thread", po::value<bool>()->default_value(false), "lacam_star_last_thread")
         ("lacam_refiner_num", po::value<int>()->default_value(4), "lacam_refiner_num")
         ("lacam_multi_thread", po::value<bool>()->default_value(false), "lacam_multi_thread")
         ("lacam_pibt_num", po::value<int>()->default_value(1), "lacam_multi_thread")
@@ -312,7 +325,6 @@ int main(int argc, char **argv) {
         // ll a*
         ("astar_wh", po::value<float>()->default_value(1.),
             "astar_wh, wh>=1, fixed; wh<=-1, vary")
-        ("astar_wh_p", po::value<float>()->default_value(3.), "astar_wh exp")
         ("use_fixed_wh1_phase2", po::value<int>()->default_value(1), "")
 
         // params for initLNS
@@ -332,7 +344,7 @@ int main(int argc, char **argv) {
             "simulated annealing parameter: at")
         ("sa_max_con_fail", po::value<double>()->default_value(0.4),
             "sa_max_con_fail")
-        ("costlns_max_con_fail", po::value<double>()->default_value(0.8),
+        ("costlns_max_con_fail", po::value<double>()->default_value(1.0),
             "costlns_max_con_fail")
         // sa phase_cost
         ("sa_phase2", po::value<bool>()->default_value(false),
@@ -352,8 +364,10 @@ int main(int argc, char **argv) {
             "num of solvers for parallel running")
         ("numSolverInit", po::value<int>()->default_value(-1),
             "num of solvers for init lns, -1 is the same as numSolver")
-        ("numGroup", po::value<int>()->default_value(1),
-            "num of groups for parallel running")
+        ("numSolverPP", po::value<int>()->default_value(-1),
+            "num of PP solvers for init lns, -1 is the same as numSolver")
+        ("numGroupPP", po::value<int>()->default_value(1),
+            "num of groups for PP solvers")
         ("shareStepPhase1", po::value<int>()->default_value(100), "")
         ("shareStepPhase2", po::value<int>()->default_value(1), "")
         ("groupModePhase1", po::value<string>()->default_value("evenly"),
@@ -365,7 +379,8 @@ int main(int argc, char **argv) {
         // param for parallel lns sa
         ("num_of_run_after_sa_accept", po::value<int>()->default_value(0), "")
         // param for initialLNS
-        ("portfolio_pp_and_eecbs_init", po::value<bool>()->default_value(false), "")
+        ("hybrid_init_algo_type", po::value<string>()->default_value("lacam"), "eecbs, lacam")
+        ("early_stop", po::value<bool>()->default_value(true), "early_stop")
         ;
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -393,43 +408,27 @@ int main(int argc, char **argv) {
     param_sa_restart_resume = vm["sa_restart_resume"].as<bool>();
     param_share_step_phase_collision = vm["shareStepPhase1"].as<int>();
     param_share_step_phase_cost = vm["shareStepPhase2"].as<int>();
-    param_num_of_run_after_sa_accept =
-        vm["num_of_run_after_sa_accept"].as<int>();
+
+    param_use_early_stop = vm["early_stop"].as<bool>();
 
     param_costlns_max_con_fail = vm["costlns_max_con_fail"].as<double>();
-    portfolio_pp_and_eecbs_init =
-        vm["portfolio_pp_and_eecbs_init"].as<bool>();
 
-    lacam::Planner::FLG_STAR = vm["lacam_star"].as<bool>();
+    param_hybrid_init_algo_type = vm["hybrid_init_algo_type"].as<string>();
 
-    auto lacam2_only = vm["lacam2_only"].as<bool>();
-    if(lacam2_only) {
-        lacam::Planner::FLG_SWAP = false;
-        lacam::Planner::FLG_MULTI_THREAD = false;
-        lacam::Planner::PIBT_NUM = 1;
-        lacam::Planner::FLG_REFINER = false;
-        lacam::Planner::FLG_SCATTER = false;
-        lacam::Planner::RANDOM_INSERT_PROB1 = 0;
-        lacam::Planner::RANDOM_INSERT_PROB2 = 0;
-        lacam::Planner::FLG_RANDOM_INSERT_INIT_NODE = false;
-        lacam::Planner::RECURSIVE_RATE = 0;
-        lacam::Planner::RECURSIVE_TIME_LIMIT = 0;
-    }
-    else {
-        lacam::Planner::REFINER_NUM = vm["lacam_refiner_num"].as<int>();
-        lacam::Planner::FLG_MULTI_THREAD = vm["lacam_multi_thread"].as<bool>();
-        lacam::Planner::PIBT_NUM = vm["lacam_pibt_num"].as<int>();
-        lacam::Planner::FLG_SCATTER = vm["lacam_scatter"].as<bool>();
-    }
+    param_lacam_star = vm["lacam_star"].as<bool>();
+    param_lacam_star_last_thread = vm["lacam_star_last_thread"].as<bool>();
+    param_lacam_pibt_num = vm["lacam_pibt_num"].as<int>();
+    lacam::Planner::REFINER_NUM = vm["lacam_refiner_num"].as<int>();
+    lacam::Planner::FLG_MULTI_THREAD = vm["lacam_multi_thread"].as<bool>();
+    lacam::Planner::FLG_SCATTER = vm["lacam_scatter"].as<bool>();
 
-    cout << "dd " << param_num_of_run_after_sa_accept 
-		 << " step1 " << param_share_step_phase_collision 
+    cout << " step1 " << param_share_step_phase_collision 
 		 << " step2 " << param_share_step_phase_cost
-		 << " pp+eecbs " << portfolio_pp_and_eecbs_init
+		 << " hybrid " << param_hybrid_init_algo_type
+		 << " " << param_num_solver_hybrid
          << endl;
 
     param_single_agent_solver_f_w = vm["astar_wh"].as<float>();
-    param_single_agent_solver_f_w_p = vm["astar_wh_p"].as<float>();
 
     group_mode_phase_collision = vm["groupModePhase1"].as<string>();
     group_mode_phase_cost = vm["groupModePhase2"].as<string>();
@@ -455,16 +454,20 @@ int main(int argc, char **argv) {
 
     param_num_solver = vm["numSolver"].as<int>();
     param_num_solver_init = vm["numSolverInit"].as<int>();
+    param_num_solver_pp = vm["numSolverPP"].as<int>();
+    if(param_num_solver_pp == -1)
+        param_num_solver_pp = param_num_solver;
+    param_num_solver_hybrid = param_num_solver - param_num_solver_pp;
     if(param_num_solver_init == -1)
         param_num_solver_init = param_num_solver;
-    param_num_group = vm["numGroup"].as<int>();
+    param_num_group_pp = vm["numGroupPP"].as<int>();
     if (param_num_solver_init > param_num_solver)
         param_num_solver_init = param_num_solver;
     if(!vm["doSharePhase2"].as<bool>() && param_num_solver_init < param_num_solver) {
         cout << "if not use share in cost phase, np should = np_init" << endl;
         exit(0);
     }
-    if (param_num_group > param_num_solver_init) param_num_group = param_num_solver_init;
+    if (param_num_group_pp > param_num_solver_pp) param_num_group_pp = param_num_solver_pp;
 
     if (vm["solver"].as<string>() == "computeInitLB") {
         CBS cbs(instance, 1000, screen);
@@ -485,8 +488,8 @@ int main(int argc, char **argv) {
     // get_np_by_test_speed(instance, pipp_option, agents);
 
     vector<int> group_list =
-        generate_groups(param_num_group, param_num_solver_init);
-    param_num_group = group_list.size();
+        generate_groups(param_num_group_pp, param_num_solver_init);
+    param_num_group_pp = group_list.size();
     ShareDataManager share_manager(
         screen + 0, vm["doSharePhase2"].as<bool>(),
         vm["doSharePhase1"].as<bool>(), group_list, param_num_solver,
@@ -498,10 +501,11 @@ int main(int argc, char **argv) {
 
     double max_mem = 0;
     int threadId = 0;
-    for (int groupId = 0; groupId < param_num_group+1; groupId++) {
+    int lacam_pibt_num = 0;
+    for (int groupId = 0; groupId < param_num_group_pp+1; groupId++) {
         bool run_costlns_only = false;
         int numLocalSolver = 0;
-        if(groupId == param_num_group) {
+        if(groupId == param_num_group_pp) {
             run_costlns_only = true;
             numLocalSolver = param_num_solver - param_num_solver_init;
         }
@@ -517,15 +521,6 @@ int main(int argc, char **argv) {
             // int N = 8;
             // string destory_name = "Adaptive";
             string initAlgo = vm["initAlgo"].as<string>();
-            // if(portfolio_pp_and_eecbs_init && groupId == param_num_group -1) {
-            //     initAlgo = "EECBS";
-            //     solutions[groupId]->has_eecbs_solver = true;
-            // }
-            if(portfolio_pp_and_eecbs_init && groupId > param_num_group/2) {   // half. TODO: 优化配置
-            // if(portfolio_pp_and_eecbs_init && groupId == param_num_group-1) {   // one: 优化配置
-                initAlgo = "lacam";
-                solutions[groupId]->has_eecbs_solver = true;
-            }
             // string initReplanAlgo = "PP";
             // string initDestoryStrategy = "Adaptive";
             SolutionShared *ss = nullptr;
@@ -548,7 +543,7 @@ int main(int argc, char **argv) {
             if(run_costlns_only)
                 lns->myGroup = -1;
             lns->numLocalSolver = numLocalSolver;
-            lns->numGroup = param_num_group;
+            lns->numGroupPP = param_num_group_pp;
             lns->use_sync_mode_in_iteration = vm["syncMode"].as<bool>();
             lns->all_run_next_if_one_solution_found =
                 vm["allRunNextIfOneSolutionFound"].as<bool>();
@@ -565,6 +560,9 @@ int main(int argc, char **argv) {
             solvers.push_back(lns);
         }
     }
+
+    set_portfolio_parameter();
+
     log(0, "Node %d started its solvers, initialization1 took %.2f seconds.\n",
         0, getTime());
 
@@ -572,7 +570,7 @@ int main(int argc, char **argv) {
     ProfilerStart("cpu_profile.log");
 #endif
     double start_time = getTime();
-    for (int groupId = 0; groupId < param_num_group; groupId++)
+    for (int groupId = 0; groupId < param_num_group_pp; groupId++)
         solutions[groupId]->time_phase_collision_start = start_time;
     share_manager.time_phase_collision_start = start_time;
 
@@ -646,7 +644,7 @@ int main(int argc, char **argv) {
         round++;
     }
     double searchTime = getTime() - startSolving;
-    for (int groupId = 0; groupId < param_num_group; groupId++)
+    for (int groupId = 0; groupId < param_num_group_pp; groupId++)
         solutions[groupId]->runtime_phase_cost =
             searchTime - solutions[groupId]->runtime_phase_collision;
     log(0, "node %d finished, joining solver threads\n", mpi_rank);
@@ -664,14 +662,13 @@ int main(int argc, char **argv) {
     double runtime_phase_collision = 0;
     double runtime_phase_cost = 0;
     int num_of_restart = 0;
-    int best_gid =
-        share_manager.getCurrentBestGroupId(solutions);
+    int best_gid = share_manager.getCurrentBestGroupId(solutions);
     num_of_colliding_pairs = share_manager.g_num_of_colliding_pairs;
     sum_of_costs = share_manager.g_sum_of_costs;
     sum_of_costs_wc = solutions[best_gid]->sum_of_costs_wc;
     runtime_phase_collision = solutions[best_gid]->runtime_phase_collision;
     runtime_phase_cost = solutions[best_gid]->runtime_phase_cost;
-    for (int groupId = 0; groupId < param_num_group; groupId++) {
+    for (int groupId = 0; groupId < param_num_group_pp; groupId++) {
         auto p = solutions[groupId];
         p->print();
         num_of_restart += solutions[groupId]->num_restart;

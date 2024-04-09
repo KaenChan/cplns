@@ -12,9 +12,14 @@ public:
     int myGroup = 0;
     int threadId = 0;
     int numLocalSolver = 1;
-    int numGroup = 1;
+    int numGroupPP = 1;
     bool use_sync_mode_in_iteration = false;
     // bool use_same_point_phase_collision = false;
+
+    // portfolio parameter
+    float single_agent_solver_f_w = 1;
+    int lacam_pibt_num = 1;
+    int lacam_star = 0;
 
     bool test_speed_mode = false;
 

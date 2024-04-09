@@ -348,6 +348,7 @@ void LNS::run_collision_lns() {
             init_lns->is_running = &is_running;
             init_lns->test_speed_mode = test_speed_mode;
             init_lns->start_time = start_time;
+            init_lns->share_manager = share_manager;
         }
 
         if (!succ_phase_collision && initial_solution_runtime < time_limit) {
@@ -411,18 +412,19 @@ bool LNS::regroup_solvers() {
         while (true) {
             if (stop_costlns_only_solver) break;
             if (runtime > time_limit) break;
+            solution_shared = share_manager->get_current_best_group_solution();
             int index = share_manager->best_group_index.load();
+            sleep(1);
             if (index == -1) continue;
             if (share_manager->solutions[index]->numLocalSolver ==
                 param_num_solver_init)
                 break;
             double runtime = getTime() - start_time;
-            sleep(1);
         }
     }
 
     if (run_costlns_only || solution_shared->use_share_phase_cost &&
-        group_mode_phase_cost == "one" && numGroup > 1) {
+        group_mode_phase_cost == "one" && numGroupPP > 1) {
         if (all_run_next_if_one_solution_found) {
             //停掉其他的group
             for (auto ss : share_manager->solutions)
@@ -435,11 +437,13 @@ bool LNS::regroup_solvers() {
             for (auto ss : share_manager->solutions)
                 ss->phase_collision_asynch_interrupt = false;
         }
-        //停掉比当前组的wh高的还没有得到解的组
-        for (auto ss : share_manager->solutions) {
-            if (ss->num_of_colliding_pairs > 0 && ss->myGroup > myGroup &&
-                !ss->has_eecbs_solver)
-                ss->phase_collision_asynch_interrupt = true;
+        if(param_use_early_stop) {
+            // early stop. 停掉比当前组的wh高的还没有得到解的组
+            for (auto ss : share_manager->solutions) {
+                if (ss->num_of_colliding_pairs > 0 && ss->myGroup > myGroup &&
+                    !ss->has_hybrid_solver)
+                    ss->phase_collision_asynch_interrupt = true;
+            }
         }
 
         //找到当前最好的group
@@ -480,17 +484,18 @@ bool LNS::regroup_solvers() {
         // accept new paths, 这个有优化空间，可以在下面跑几轮，看结果自己更新
         if (run_costlns_only ||
             myGroup != solution_shared->myGroup && !succ_phase_collision) {
+            printf("g %d pe %d accept new paths\n", myGroup, myId);
             solution_shared->read_global_data(path_table, agents);
             sum_of_costs = path_table.sum_of_costs;
             initial_sum_of_costs = sum_of_costs;
-            if(sum_of_costs < MAX_COST)
-                succ_phase_collision = true;
+            if (sum_of_costs < MAX_COST) succ_phase_collision = true;
         }
-        if(!succ_phase_collision) {
+        if (!succ_phase_collision) {
             printf("g %d pe %d succ_phase_collision 0\n", myGroup, myId);
             return false;
         }
-        printf("validateSolution LNS:469\n");
+        printf("g %d pe %d validateSolution LNS:469 cost %d\n", myGroup, myId,
+               sum_of_costs);
         validateSolution();
 
         if (run_costlns_only) {
@@ -1011,6 +1016,7 @@ bool LNS::runlacam() {
     
     const auto ins = lacam::InstanceLa(map_name, start_indexes, goal_indexes);
 
+    // 设置heuristic
     auto D = new lacam::DistTable(ins);
     std::vector<std::vector<int>> table(ins.N, std::vector<int>(D->K, D->K)); 
     for (int id=0; id<D->K; id++) {
@@ -1024,32 +1030,70 @@ bool LNS::runlacam() {
     }
     // D->setup(&ins);
 
-    auto func = [&] (const lacam::Solution &solution) {
-        callbackLacamResult(solution, shuffled_agents);
+    auto func = [&] (lacam::Solution &solution) {
+        return callbackLacamResult(solution, shuffled_agents, ins);
     };
 
     const auto deadline = lacam::Deadline(time_limit * 1000);
     int seed = rand();
-    const auto solution = lacam_solve(ins, 3, &deadline, seed, D, func);
+    auto solution = lacam_solve(ins, 3, &deadline, seed, D, func, &solution_shared->phase_cost_asynch_interrupt, &is_running);
 
     delete D;
 
     if (solution.empty()) 
         return false;
 
+    // func(solution);
     updateLacamResult(solution, shuffled_agents);
     return true;
 }
 
-void LNS::callbackLacamResult(const lacam::Solution &solution, vector<int>& shuffled_agents) {
+int LNS::callbackLacamResult(lacam::Solution &solution, vector<int>& shuffled_agents, const lacam::InstanceLa &ins) {
     path_table.reset();
     num_of_iteration++;
     updateLacamResult(solution, shuffled_agents);
+    int old_cost = path_table.sum_of_costs;
+
+    if(false) {
+        //助力最好的group，用于star为1的solver
+        auto solution_shared_b = share_manager->get_current_best_group_solution();
+        int index = share_manager->best_group_index.load();
+        if (index != -1) solution_shared = solution_shared_b;
+    }
+
     solution_shared->do_share_phase_cost(myId, path_table, agents, destroy_weights);
     solution_shared->colliding_pairs_4_print = 0;
+    if (path_table.sum_of_costs < old_cost) {
+        // cvt to lacam solution
+        // callbackLacamResult
+        // printf("callbackLacamResult cost old %d new %d\n", old_cost, path_table.sum_of_costs);
+        cvtPath2LacamConfigs(solution, shuffled_agents, ins);
+    }
+    // printf("g %d pe %d validateSolution LNS:1067\n", myGroup, myId);  // lacam的结果还有bug，需要修改一下
+    // sum_of_costs = path_table.sum_of_costs;
+    // validateSolution();
+    return path_table.sum_of_costs;
 }
 
-void LNS::updateLacamResult(const lacam::Solution &solution, vector<int>& shuffled_agents) {
+void LNS::cvtPath2LacamConfigs(lacam::Solution &solution, vector<int>& shuffled_agents, const lacam::InstanceLa &ins) {
+    //先生成lacamPath，在转换成configs
+    std::vector<lacam::Path> lacam_paths;
+    for (int i = 0; i < agents.size(); i++) {
+        lacam::Path lacam_path;
+        int a_id = shuffled_agents[i];
+        auto p = agents[a_id].path;
+        lacam_path.resize(p.size());
+        for (int n_index = 0; n_index < p.size(); n_index++) {
+            auto loc = p[n_index].location;
+            auto n = ins.G->U[loc];
+            lacam_path[n_index] = n;
+        }
+        lacam_paths.push_back(lacam_path);
+    }
+    solution = lacam::translatePathsToConfigs(lacam_paths);
+}
+
+void LNS::updateLacamResult(lacam::Solution &solution, vector<int>& shuffled_agents) {
     std::vector<lacam::Path> paths = lacam::translateConfigsToPaths(solution);
     int soc = 0;
     for (int i = 0; i < paths.size(); i++) {
@@ -1059,8 +1103,8 @@ void LNS::updateLacamResult(const lacam::Solution &solution, vector<int>& shuffl
         int last_goal_visit = 0;
         // if (screen >= 2) std::cout << A[i]->logStr() << std::endl;
         for (int n_index = 0; n_index < paths[i].size(); n_index++) {
-            auto n = paths[i][n_index];
-            auto loc = instance.linearizeCoordinate(n->y, n->x);
+            lacam::Vertex *n = paths[i][n_index];
+            int loc = instance.linearizeCoordinate(n->y, n->x);
             agents[a_id].path[n_index] = PathEntry(loc);
 
             // record the last time agent reach the goal from a non-goal vertex.
@@ -1439,8 +1483,7 @@ void LNS::validateSolution() const {
             for (; t < (int)a2.path.size(); t++) {
                 if (a2.path[t].location == target)  // target conflict
                 {
-                    sout << "pe " << myId
-                         << " Find a target conflict where agent " << a2.id
+                    sout << " Find a target conflict where agent " << a2.id
                          << " (of length " << a2.path.size() - 1
                          << ") traverses agent " << a1.id << " (of length "
                          << a1.path.size() - 1 << ")'s target location "
@@ -1452,7 +1495,7 @@ void LNS::validateSolution() const {
         }
     }
     if (sum_of_costs != sum) {
-        sout << "pe " << myId << " The computed sum of costs " << sum_of_costs
+        sout << " The computed sum of costs " << sum_of_costs
              << " is different from the sum of the paths in the solution "
              << sum << endl;
         succ = false;
@@ -1460,7 +1503,7 @@ void LNS::validateSolution() const {
     }
 error_flag:
     if (!succ) {
-        printf("%s", sout.str().c_str());
+        printf("g %d pe %d %s", myGroup, myId, sout.str().c_str());
         exit(-1);
     }
 }

@@ -64,11 +64,11 @@ struct Planner {
 
   // parameters
   static bool FLG_SWAP;  // whether to use swap technique in PIBTa
-  static bool
+  thread_local static bool
       FLG_STAR;  // whether to refine solutions after initial solution discovery
   static bool FLG_MULTI_THREAD;
   static int SCATTER_MARGIN;  // used in SUO
-  static int PIBT_NUM;  // number of PIBTa run, i.e., Monte-Carlo configuration
+  thread_local static int PIBT_NUM;  // number of PIBTa run, i.e., Monte-Carlo configuration
                         // generator
   static bool FLG_REFINER;  // whether to use refiners
   static int REFINER_NUM;   // number of refiners
@@ -88,16 +88,18 @@ struct Planner {
   int time_initial_solution;
   int cost_initial_solution;
   std::vector<int> checkpoints;
-  std::function<void(const lacam::Solution &)> func;
+
+  // add ck
+  std::function<int(lacam::Solution &)> func = nullptr;
+  int* is_running = nullptr;
 
   Planner(const InstanceLa *_ins, int _verbose = 0,
           const Deadline *_deadline = nullptr, int _seed = 0,
           DistTable *_D = nullptr,  // used in recursive LaCAM
-          int _depth = 0,          // used in recursive LaCAM
-          std::function<void(const lacam::Solution &)> func = nullptr
+          int _depth = 0          // used in recursive LaCAM
   );
   ~Planner();
-  Solution solve();
+  Solution solve(std::atomic<bool> *interrupt = nullptr);
   bool set_new_config(HNode *S, LNode *M, Config &Q_to);
   HNode *create_highlevel_node(const Config &Q, HNode *parent);
   void rewrite(HNode *H_from, HNode *H_to);

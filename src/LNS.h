@@ -97,8 +97,9 @@ class LNS : public BasicLNS {
     bool runWinPIBT();
 
     bool runlacam();
-    void callbackLacamResult(const lacam::Solution &solution, vector<int>& shuffled_agents);
-    void updateLacamResult(const lacam::Solution &solution, vector<int>& shuffled_agents);
+    int callbackLacamResult(lacam::Solution &solution, vector<int>& shuffled_agents, const lacam::InstanceLa &ins);
+    void updateLacamResult(lacam::Solution &solution, vector<int>& shuffled_agents);
+    void cvtPath2LacamConfigs(lacam::Solution &solution, vector<int>& shuffled_agents, const lacam::InstanceLa &ins);
 
     MAPF preparePIBTProblem(vector<int>& shuffled_agents);
     void updatePIBTResult(const PIBT_Agents& A, vector<int>& shuffled_agents);

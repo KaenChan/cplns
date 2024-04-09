@@ -47,6 +47,7 @@ void SolutionShared::do_share_phase_cost(int pe_id, PathTable &path_table_local,
     // else
     if (time_phase_cost_start == -1) time_phase_cost_start = getTime();
     runtime_phase_cost = getTime() - time_phase_cost_start;
+    // printf("use_share_phase_cost %d s1 %d s2 %d\n", use_share_phase_cost, path_table_local.sum_of_costs, sum_of_costs);
     if (!use_share_phase_cost) {  // write
         pathTableUpdateLock.lock();
         if (path_table_local.sum_of_costs < sum_of_costs) {

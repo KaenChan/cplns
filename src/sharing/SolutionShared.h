@@ -22,7 +22,7 @@ class SolutionShared {
     int myGroup = 0;
     std::atomic<int> numLocalSolver{1};
 
-    bool has_eecbs_solver = false;
+    bool has_hybrid_solver = false;
 
     int sum_of_distances = MAX_COST;
     double time_phase_collision_start = 0;

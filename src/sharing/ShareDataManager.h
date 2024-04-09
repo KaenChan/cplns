@@ -10,7 +10,7 @@ class ShareDataManager {
                      vector<int> &group_list, int np, int np_init);
 
     int screen;
-    int numGroup;
+    int numGroupPP;
     int np;
     int np_init;
     vector<SolutionShared *> solutions;

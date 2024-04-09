@@ -6,9 +6,9 @@ ShareDataManager::ShareDataManager(int screen, bool use_share,
                                    bool use_share_wc, vector<int> &group_list, 
                                    int np, int np_init)
     : screen(screen), np(np), np_init(np_init) {
-    numGroup = group_list.size();
+    numGroupPP = group_list.size();
     int sum = 0;
-    for (int i = 0; i < numGroup; i++) {
+    for (int i = 0; i < numGroupPP; i++) {
         SolutionShared *solution_shared =
             new SolutionShared(screen - 1, use_share, use_share_wc);
         solution_shared->myGroup = i;
@@ -22,7 +22,7 @@ ShareDataManager::ShareDataManager(int screen, bool use_share,
     pthread_barrier_init(&barrier_all_threads_restart1, NULL, np);
     pthread_barrier_init(&barrier_all_threads_restart2, NULL, np);
 
-    for (int groupId = 0; groupId < numGroup; groupId++) {
+    for (int groupId = 0; groupId < numGroupPP; groupId++) {
         int numLocalSolver = group_list[groupId];
         log(0, "create group %d with %d solvers.\n", groupId, numLocalSolver);
         auto ss = solutions[groupId];
@@ -85,7 +85,7 @@ int ShareDataManager::getCurrentBestGroupId(
     double runtime_phase_cost = 0;
     int num_of_restart = 0;
     int best_groupId = 0;
-    for (int groupId = 0; groupId < numGroup; groupId++) {
+    for (int groupId = 0; groupId < numGroupPP; groupId++) {
         auto p = solutions[groupId];
         // p->print();
         if (p->num_of_colliding_pairs == 0 && num_of_colliding_pairs > 0 ||
@@ -124,7 +124,7 @@ int ShareDataManager::getCurrentBestGroupId(
 void ShareDataManager::print(double mem_use_rate) {
     int groupId = getCurrentBestGroupId(solutions);
     if (screen > 0) {
-        for (int groupId = 0; groupId < numGroup; groupId++) {
+        for (int groupId = 0; groupId < numGroupPP; groupId++) {
             string s = solutions[groupId]->print();
             printf("[%.0f]-%d-%d-m%.2f %s\n", getTime(), g_num_of_colliding_pairs,
                    g_sum_of_costs, mem_use_rate, s.c_str());
@@ -140,7 +140,7 @@ void ShareDataManager::destory_barrier() {
     pthread_barrier_destroy(&barrier_stop_all_init_solver);
     pthread_barrier_destroy(&barrier_all_threads_restart1);
     pthread_barrier_destroy(&barrier_all_threads_restart2);
-    for (int groupId = 0; groupId < numGroup; groupId++) {
+    for (int groupId = 0; groupId < numGroupPP; groupId++) {
         auto ss = solutions[groupId];
         pthread_barrier_destroy(&ss->barrier_phase_cost_start1);
         pthread_barrier_destroy(&ss->barrier_phase_cost_start2);

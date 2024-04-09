@@ -6,10 +6,10 @@
 namespace lacam {
 
 bool Planner::FLG_SWAP = true;
-bool Planner::FLG_STAR = false;
+thread_local bool Planner::FLG_STAR = false;
 bool Planner::FLG_MULTI_THREAD = false;
 int Planner::SCATTER_MARGIN = 10;
-int Planner::PIBT_NUM = 1;
+thread_local int Planner::PIBT_NUM = 5;
 bool Planner::FLG_REFINER = true;
 int Planner::REFINER_NUM = 4;
 bool Planner::FLG_SCATTER = true;
@@ -26,7 +26,7 @@ constexpr int CHECKPOINTS_NIL = -1;
 constexpr auto TIME_ZERO = std::chrono::seconds(0);
 
 Planner::Planner(const InstanceLa *_ins, int _verbose, const Deadline *_deadline,
-                 int _seed, DistTable *_D, int _depth, std::function<void(const lacam::Solution &)> func)
+                 int _seed, DistTable *_D, int _depth)
     : ins(_ins),
       deadline(_deadline),
       seed(_seed),
@@ -48,8 +48,7 @@ Planner::Planner(const InstanceLa *_ins, int _verbose, const Deadline *_deadline
       search_iter(0),
       time_initial_solution(-1),
       cost_initial_solution(-1),
-      checkpoints(),
-      func(func)
+      checkpoints()
 {
 }
 
@@ -61,10 +60,12 @@ Planner::~Planner()
   if (delete_dist_table_after_used) delete D;
 }
 
-Solution Planner::solve()
+Solution Planner::solve(std::atomic<bool> *interrupt)
 {
   info(1, verbose, deadline, "start search");
   update_checkpoints();
+
+  *is_running = 900;
 
   // insert initial node
   H_init = create_highlevel_node(ins->starts, nullptr);
@@ -73,10 +74,35 @@ Solution Planner::solve()
   set_scatter();
   set_pibt();
 
+  int pre_share_time = -1;
+  int pre_soc = INFINITY;
   // search loop
   while (!OPEN.empty() && !is_expired(deadline)) {
+    *is_running = 901;
     search_iter += 1;
     update_checkpoints();
+
+    // 与共享的solution进行通信
+    if(false) {
+      int cur_share_time = deadline->elapsed_ms() / 1000;
+      if(pre_share_time < cur_share_time) {
+        *is_running = 902;
+        if(interrupt != nullptr && interrupt->load())
+          break;
+        if(H_goal != nullptr && func != nullptr) {
+          auto solution = backtrack(H_goal);        // obtain solution
+          int soc = func(solution);
+          printf("pre_share_time %d cur_share_time %d search_iter %d pre_cost %d cur_cost %d\n",  
+            pre_share_time, cur_share_time, search_iter, pre_soc, soc);
+          if(soc < pre_soc) {
+            printf("    get_better soc %d -> %d\n", pre_soc, soc);
+            apply_new_solution(solution);
+            pre_soc = soc;
+          }
+        }
+        pre_share_time = cur_share_time;
+      }
+    }
 
     // check pooled procedures
     refiner_pool.remove_if([&](auto &proc) {
@@ -99,14 +125,17 @@ Solution Planner::solve()
               : OPEN[get_random_int(MT, 0, OPEN.size() - 1)];
     }
 
+    *is_running = 903;
     // check lower bounds
     if (H_goal != nullptr && H->f >= H_goal->f) {
       OPEN.pop_front();
       continue;
     }
 
+    *is_running = 904;
     // check goal condition
     if (H_goal == nullptr && is_same_config(H->C, ins->goals)) {
+      *is_running = 905;
       time_initial_solution = elapsed_ms(deadline);
       cost_initial_solution = H->g;
       H_goal = H;
@@ -115,7 +144,10 @@ Solution Planner::solve()
         auto solution = backtrack(H_goal);        // obtain solution
         func(solution);
       }
-      if (!FLG_STAR) break;  // finish search
+      if (!FLG_STAR) {
+        info(1, verbose, deadline, "finish search since FLG_STAR = ", FLG_STAR);
+        break;  // finish search
+      }
       set_refiner();         // refining start
       continue;
     }
@@ -127,12 +159,14 @@ Solution Planner::solve()
       continue;
     }
 
+    *is_running = 906;
     // create successors at the high-level search
     auto Q_to = Config(N, nullptr);
     auto res = set_new_config(H, L, Q_to);
     delete L;
     if (!res) continue;
 
+    *is_running = 907;
     // check explored list
     auto iter = EXPLORED.find(Q_to);
     if (iter != EXPLORED.end()) {
@@ -151,6 +185,7 @@ Solution Planner::solve()
     }
   }
 
+  *is_running = 908;
   // clear pooled operaitons
   bool is_optimal = OPEN.empty();
   for (auto &proc : refiner_pool) apply_new_solution(proc.get());

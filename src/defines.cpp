@@ -9,6 +9,8 @@ double param_sa_max_con_fail = 0.4;
 bool param_use_fast_run = false;       // 弃用
 bool param_sa_restart_resume = false;  // 弃用
 
+bool param_use_early_stop = true;
+
 double param_costlns_max_con_fail = 0.7;
 
 // param for sa in phase_cost LNS
@@ -18,21 +20,28 @@ double param_sa_iteration_coolfactor_phase_cost = 0.99;
 
 // param for parallel
 int param_num_solver = 4;
-int param_num_solver_init = 4;
-int param_num_group = 1;
+int param_num_solver_init = 4;     // 用于测试only_costlns
+int param_num_solver_pp = 4;
+int param_num_group_pp = 1;
 int param_share_step_phase_collision = 1;
 int param_share_step_phase_cost = 1;
 
-// param for parallel lns sa
-int param_num_of_run_after_sa_accept = 100;
+string param_hybrid_init_algo_type = "lacam";
+int param_hybrid_init_solver_num = 0;
+int param_num_solver_hybrid = 0;
 
 // weighted sipps
 float param_single_agent_solver_f_w = 1.0;
-float param_single_agent_solver_f_w_p = 3.;
 int param_use_fixed_wh1_phase_cost = 0;
 
 thread_local bool tl_use_simulated_annealing = true;
 thread_local float tl_single_agent_solver_f_w = 1.0;
+
+//lacam_pibt_num
+int param_lacam_pibt_num = 1;
+bool param_lacam_star = false;
+bool param_lacam_star_last_thread = false;
+bool param_lacam_recv_shared_solution = true;
 
 namespace simulated_annealing {
 thread_local double sa_iteration_T_init = 0.0;  // 会变化
